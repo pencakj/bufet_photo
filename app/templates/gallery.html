@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Webcam Gallery</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: {{ 'white' if is_daytime else '#1a1a1a' }};
+            color: {{ '#333333' if is_daytime else '#ffffff' }};
+        }
+        .day-separator {
+            padding: 10px 20px;
+            background-color: {{ '#f5f5f5' if is_daytime else '#222222' }};
+            color: {{ '#333333' if is_daytime else '#ffffff' }};
+            font-size: 1.2em;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 2px;
+            padding: 2px;
+            background-color: {{ '#dddddd' if is_daytime else '#333333' }};
+        }
+        .image-card {
+            background: {{ 'white' if is_daytime else '#1a1a1a' }};
+            padding: 0;
+            position: relative;
+            cursor: pointer;
+        }
+        .image-card img {
+            width: 100%;
+            height: auto;
+            display: block;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .image-card img.loaded {
+            opacity: 1;
+        }
+        .timestamp {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 5px;
+            font-size: 0.8em;
+            color: #ffffff;
+            background: rgba(0, 0, 0, 0.7);
+            text-align: center;
+        }
+
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+            z-index: 1000;
+            overflow: auto;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-content {
+            max-width: 90%;
+            max-height: 90vh;
+            margin: auto;
+            display: block;
+        }
+        .modal-timestamp {
+            position: fixed;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            color: white;
+            font-size: 1.2em;
+            text-shadow: 2px 2px 2px rgba(0,0,0,0.8);
+        }
+        .close {
+            position: fixed;
+            top: 15px;
+            right: 35px;
+            color: #f1f1f1;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close:hover {
+            color: #bbb;
+        }
+
+        .loading {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 1.2em;
+            z-index: 1001;
+        }
+
+        /* Arrow styles */
+        .arrow {
+            cursor: pointer;
+            position: fixed;
+            top: 50%;
+            transform: translateY(-50%);
+            padding: 16px;
+            color: white;
+            font-size: 30px;
+            transition: 0.6s ease;
+            user-select: none;
+            background-color: rgba(0, 0, 0, 0.3);
+            z-index: 1002;
+        }
+        .arrow:hover {
+            background-color: rgba(0, 0, 0, 0.8);
+        }
+        .left {
+            left: 0;
+            border-radius: 0 3px 3px 0;
+        }
+        .right {
+            right: 0;
+            border-radius: 3px 0 0 3px;
+        }
+    </style>
+</head>
+<body>
+    {% for day, day_images in images|groupby('day')|sort(reverse=True) %}
+    <div class="day-separator">{{ day }}</div>
+    <div class="gallery">
+        {% for image in day_images %}
+        <div class="image-card" 
+             onclick="openModal('{{ url_for('serve_image', filename=image.path) }}', '{{ image.formatted_time }}')"
+             data-timestamp="{{ image.formatted_time }}">
+            <img data-src="{{ url_for('serve_thumbnail', filename=image.thumb_path) }}" 
+                 data-full-src="{{ url_for('serve_image', filename=image.path) }}"
+                 alt="Image {{ image.formatted_time }}"
+                 loading="lazy"
+                 class="lazy">
+            <div class="timestamp">{{ image.formatted_time.split(' ')[1] }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+
+    <!-- Modal -->
+    <div id="imageModal" class="modal" onclick="closeModal()">
+        <span class="close">&times;</span>
+        <div class="arrow left" onclick="event.stopPropagation(); changeImage(-1)">&#10094;</div>
+        <div class="arrow right" onclick="event.stopPropagation(); changeImage(1)">&#10095;</div>
+        <img class="modal-content" id="modalImage">
+        <div id="modalTimestamp" class="modal-timestamp"></div>
+    </div>
+
+    <div class="loading" id="loading">Loading...</div>
+
+    <script>
+        // Lazy loading implementation
+        document.addEventListener("DOMContentLoaded", function() {
+            let lazyImages = [].slice.call(document.querySelectorAll("img.lazy"));
+            let imageObserver;
+
+            if ("IntersectionObserver" in window) {
+                imageObserver = new IntersectionObserver(function(entries, observer) {
+                    entries.forEach(function(entry) {
+                        if (entry.isIntersecting) {
+                            let img = entry.target;
+                            img.src = img.dataset.src;
+                            img.onload = function() {
+                                img.classList.add('loaded');
+                            };
+                            img.classList.remove("lazy");
+                            imageObserver.unobserve(img);
+                        }
+                    });
+                }, {
+                    rootMargin: "50px 0px"
+                });
+
+                lazyImages.forEach(function(img) {
+                    imageObserver.observe(img);
+                });
+            }
+        });
+
+        // Modal and navigation
+        let currentImageIndex = 0;
+        let allImages = [];
+        const modal = document.getElementById('imageModal');
+        const modalImg = document.getElementById('modalImage');
+        const modalTimestamp = document.getElementById('modalTimestamp');
+        const loading = document.getElementById('loading');
+
+        function openModal(imageSrc, timestamp) {
+            modal.style.display = 'flex';
+            loading.style.display = 'block';
+            modalTimestamp.textContent = timestamp;
+            
+            allImages = Array.from(document.querySelectorAll('.image-card'));
+            currentImageIndex = allImages.findIndex(card => 
+                card.querySelector('img').getAttribute('data-full-src') === imageSrc
+            );
+            
+            const img = new Image();
+            img.onload = function() {
+                loading.style.display = 'none';
+                modalImg.src = imageSrc;
+            };
+            img.src = imageSrc;
+            
+            document.body.style.overflow = 'hidden';
+        }
+
+        function changeImage(direction) {
+            currentImageIndex += direction;
+            
+            if (currentImageIndex >= allImages.length) currentImageIndex = 0;
+            if (currentImageIndex < 0) currentImageIndex = allImages.length - 1;
+            
+            const newCard = allImages[currentImageIndex];
+            const newSrc = newCard.querySelector('img').getAttribute('data-full-src');
+            const newTimestamp = newCard.getAttribute('data-timestamp');
+            
+            loading.style.display = 'block';
+            modalTimestamp.textContent = newTimestamp;
+            
+            const img = new Image();
+            img.onload = function() {
+                loading.style.display = 'none';
+                modalImg.src = newSrc;
+            };
+            img.src = newSrc;
+        }
+
+        function closeModal() {
+            modal.style.display = 'none';
+            modalImg.src = '';
+            document.body.style.overflow = 'auto';
+        }
+
+        document.addEventListener('keydown', function(event) {
+            if (modal.style.display === 'flex') {
+                if (event.key === 'Escape') {
+                    closeModal();
+                } else if (event.key === 'ArrowLeft') {
+                    changeImage(-1);
+                } else if (event.key === 'ArrowRight') {
+                    changeImage(1);
+                }
+            }
+        });
+
+        modalImg.onclick = function(event) {
+            event.stopPropagation();
+        };
+    </script>
+</body>
+</html>

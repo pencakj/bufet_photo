@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  webapp:
+    build: ./app
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data/images:/app/images
+      - ./data/thumbnails:/app/thumbnails
+    user: root
+    restart: unless-stopped
