@@ -16,7 +16,7 @@ const state = {
 };
 
 const metricConfig = {
-    temp: { title: 'Temperature', unit: '°C', color: '#b45309', min: -30, max: 40 },
+    temp: { title: 'Temperature', unit: '°C', color: '#b45309' },
     hum: { title: 'Humidity', unit: '%', color: '#2563eb', min: 0, max: 100 },
     wspd: { title: 'Wind speed', unit: ' m/s', color: '#7c3aed', min: 0, max: null },
     bar: { title: 'Atmospheric pressure', unit: ' hPa', color: '#0891b2', min: null, max: null },
@@ -334,6 +334,7 @@ function renderChart() {
                 y: {
                     min: cfg.min,
                     max: cfg.max,
+                    grace: state.metric === 'temp' ? '10%' : 0,
                     ticks: { color: axisColor, font: { family: 'JetBrains Mono', size: 10 }, callback: v => v + cfg.unit },
                     grid: { color: gridColor }
                 }
