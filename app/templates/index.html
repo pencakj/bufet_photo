@@ -25,7 +25,7 @@
             </a>
 
             <nav class="controls">
-                <button class="weather-chip" id="weatherChip" type="button" title="Weather station: Chalupa na Rozcestí (shared across camera views)" hidden>
+                <button class="weather-chip" id="weatherChip" type="button" title="Weather station: Chalupa na Rozcestí" hidden>
                     <span class="chip-temp" id="chipTemp">--°</span>
                     <span class="chip-meta">
                         <span class="chip-range"><span class="chip-min" id="chipMin">--°</span> · <span class="chip-max" id="chipMax">--°</span></span>
@@ -57,7 +57,8 @@
             <p id="cameraStatus" role="status">Loading camera…</p>
             <a id="cameraSource" href="https://chalupanarozcesti.cz/" target="_blank" rel="noopener noreferrer">Source: Chalupa na Rozcestí ↗</a>
         </div>
-        <p class="weather-station-note">Weather: Chalupa na Rozcestí · shared station, not measured at every camera.</p>
+        <p class="weather-station-note" id="weatherStationNote" role="status">Načítám počasí pro tuto kameru…</p>
+        <a class="weather-station-note" id="weatherSource" href="https://app.weathercloud.net/" target="_blank" rel="noopener noreferrer" hidden>Zdroj počasí ↗</a>
         <section class="hero" aria-label="Latest photograph">
             <figure class="hero-figure" id="heroFigure">
                 <div class="hero-frame">
@@ -117,7 +118,7 @@
 
         <footer class="colophon">
             <p>Krkonoše Live · An ongoing record of the highest Czech mountains.</p>
-            <p class="mono">v3.0.0-rc.1 · Multi-camera preview · FastAPI</p>
+            <p class="mono">v3.0.0-rc.2 · Multi-camera preview · FastAPI</p>
         </footer>
     </div>
 
@@ -137,7 +138,7 @@
         <div class="reader-sheet">
             <header class="reader-head">
                 <div>
-                    <p class="eyebrow">Meteorological record · Chalupa na Rozcestí</p>
+                    <p class="eyebrow" id="readerStation">Meteorological record · Chalupa na Rozcestí</p>
                     <h3 class="reader-title" id="readerTitle">Temperature</h3>
                 </div>
                 <button class="reader-close" id="readerClose" aria-label="Close">×</button>
@@ -159,11 +160,12 @@
             <div class="chart-wrap">
                 <canvas id="chart"></canvas>
             </div>
+            <p class="weather-station-note" id="readerCoverage" role="status"></p>
         </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js" integrity="sha384-Emf5ZVIUiarAdhkgtqK+5/Z5qIvM6QoVrS+qAVtfyZVuD5lIHrac0me485+Antp0" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js" integrity="sha384-cVMg8E3QFwTvGCDuK+ET4PD341jF3W8nO1auiXfuZNQkzbUUiBGLsIQUE+b1mxws" crossorigin="anonymous"></script>
-    <script src="/static/app.js?v=3"></script>
+    <script src="/static/app.js?v=3.0.0-rc.2"></script>
 </body>
 </html>

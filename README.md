@@ -48,10 +48,45 @@ The preview mounts these original production directories **read-only**:
 - `/appl/data/bufet/data/thumbnails` → `/app/thumbnails`
 - `/appl/data/bufet/data/weather` → `/app/data`
 
-Only stable captures the original camera and polls its weather station.
+Only stable captures the original camera and polls its Weathercloud station.
 `LEGACY_READ_ONLY=true` and `WEATHER_POLL_ENABLED=false` enforce that in preview.
-Weather is explicitly labelled as Chalupa na Rozcestí, not local measurements
-at all eight cameras.
+The preview independently polls the additional weather sources listed below,
+without writing to the original Weathercloud archive.
+
+### Weather per camera (3.0.0-rc.2)
+
+| Camera | Weather source |
+| --- | --- |
+| Chalupa na Rozcestí | Existing bufet / Weathercloud station, read-only |
+| Klínové boudy | Same bufet station, explicitly marked shared |
+| Pec pod Sněžkou | ČHMÚ Pec pod Sněžkou, 816 m |
+| Bedřichov | Same ČHMÚ Pec station, explicitly marked shared |
+| Hotel Bedřiška | Same ČHMÚ Pec station, explicitly marked shared |
+| Luční bouda | ČHMÚ Luční bouda, 1413 m |
+| Sněžka | ČHMÚ Sněžka, Poštovna, 1602 m |
+| Svatý Petr – Pláň | Open-Meteo model for the camera coordinates at 1198 m, **not a station observation** |
+
+The Pec camera is at Husova bouda (1046 m), while the chosen ČHMÚ station is
+in the valley (816 m); the interface explicitly states this difference.
+ČHMÚ operative ten-minute JSON data are used with CC BY 4.0 attribution.
+Open-Meteo supplies hourly model values with wind speed requested in m/s;
+its hosted free API is for non-commercial use, subject to provider limits.
+
+Weather is requested server-side once per shared station every ten minutes,
+not once per camera or browser. The additional station caches live under
+`/appl/data/krkonose_live_release/weather`, persist across restarts, and retain
+32 days. ČHMÚ bootstraps the available recent three days; older graph ranges
+fill as collection continues. Open-Meteo provides a model lookback, not
+historical measurements. Every graph shows the actual available date range.
+Future forecasts are excluded from history. Original weather history is neither
+copied nor modified.
+
+The interface shows the actual station, measurement/model distinction,
+observation time, provider errors and a warning for data older than two hours.
+Unavailable sensors are disabled rather than shown as zero. Rain charts state
+the source interval (ten minutes for ČHMÚ, one hour for the model); bufet rain
+retains its original station-counter semantics. Pressure from ČHMÚ/model is
+station/surface pressure, not sea-level pressure.
 
 New snapshots are stored under
 `/appl/data/krkonose_live_release/<camera-id>/{images,thumbnails}`. This root
@@ -74,6 +109,10 @@ Visit `http://localhost:8004`. Health: `/healthz`. Camera/status registry:
 `/api/cameras`. Archive: `/api/images?camera=pec&offset=0&limit=50&order=desc`.
 Images, thumbnails and thumbnail generation accept the same `camera` parameter;
 omitting it selects the original camera. Unknown camera IDs return 404.
+Weather endpoints also accept `camera`, for example
+`/api/weather/current?camera=bedriska` and
+`/api/weather/history?camera=lucni-bouda&hours=24`. Responses include source
+metadata; history also includes actual coverage timestamps.
 
 To stop **only** preview, run `docker compose down` in this checkout. It does
 not delete bind-mounted archives. Do not run stable's commands from this directory.

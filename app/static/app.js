@@ -17,6 +17,10 @@ const state = {
     metric: 'temp',
     metricWindow: 24,
     weatherRecords: [],
+    weatherStation: null,
+    weatherRequest: 0,
+    weatherHistoryRequest: 0,
+    weatherRetry: null,
     renderedChapters: new Map(), // day -> {head, grid} elements
 };
 
@@ -59,15 +63,71 @@ function formatTimeOnly(ts) { return ts.split(' ')[1]; }
 
 // Weather chip
 async function loadWeather() {
+    if (state.weatherRetry) clearTimeout(state.weatherRetry);
+    const camera = state.camera;
+    const request = ++state.weatherRequest;
     try {
-        const r = await fetch('/api/weather/current');
+        const r = await fetch(`/api/weather/current?camera=${encodeURIComponent(camera)}`);
+        if (!r.ok) throw new Error('Weather unavailable');
         const j = await r.json();
+        if (request !== state.weatherRequest || camera !== state.camera) return;
+        state.weatherStation = j.station;
+        showWeatherStation(j.station, [
+            j.observed_at ? `Čas dat: ${weatherTime(j.observed_at)}` : 'Čekám na data ze zdroje.',
+            j.stale ? 'Pozor: data chybí nebo jsou starší než 2 hodiny.' : '',
+            j.error || '',
+        ].filter(Boolean).join(' · '));
+        $('weatherChip').hidden = !j.data;
         if (j.success && j.data) renderWeatherChip(j.data);
-    } catch (e) { /* silent */ }
+        updateMetricAvailability(j.available_metrics || []);
+        if (!j.data) {
+            state.weatherRetry = setTimeout(() => { if (state.camera === camera) loadWeather(); }, 30000);
+        }
+    } catch (e) {
+        if (request !== state.weatherRequest || camera !== state.camera) return;
+        $('weatherChip').hidden = true;
+        showWeatherStation(state.weatherStation, 'Počasí nyní není dostupné.');
+    }
+}
+
+function weatherTime(value) {
+    return new Date(value).toLocaleString('cs-CZ', { timeZone: 'Europe/Prague' });
+}
+
+function showWeatherStation(station, status = '') {
+    if (!station) {
+        $('weatherStationNote').textContent = status || 'Načítám zdroj počasí…';
+        $('weatherSource').hidden = true;
+        return;
+    }
+    const label = station.kind === 'model' ? 'Modelový odhad' : 'Měření';
+    $('weatherStationNote').textContent = `${label}: ${station.name} · ${station.note} ${status}`;
+    $('weatherSource').textContent = `Zdroj: ${station.attribution} ↗`;
+    $('weatherSource').href = station.url;
+    $('weatherSource').hidden = false;
+    $('weatherChip').title = `${label}: ${station.name}`;
+    $('readerStation').textContent = `${label} · ${station.name} · ${station.provider}`;
+}
+
+function updateMetricAvailability(metrics) {
+    document.querySelectorAll('#metricPills .pill').forEach(button => {
+        button.disabled = !metrics.includes(button.dataset.metric);
+        button.title = button.disabled ? 'Zdroj tento údaj pro dané období neposkytuje.' : '';
+    });
+    if (!metrics.includes(state.metric)) state.metric = 'temp';
+    document.querySelectorAll('#metricPills .pill').forEach(button => {
+        button.classList.toggle('active', button.dataset.metric === state.metric);
+    });
 }
 
 function renderWeatherChip(d) {
     const chip = $('weatherChip');
+    $('chipTemp').textContent = '—';
+    $('chipMin').textContent = '—';
+    $('chipMax').textContent = '—';
+    $('chipHum').textContent = d.humidity != null ? d.humidity + '%' : '—';
+    $('chipWind').textContent = d.wind_speed != null ? d.wind_speed.toFixed(1) + ' m/s' : '—';
+    $('chipWindArrow').hidden = d.wind_dir == null;
     if (d.temp && d.temp.current != null) {
         $('chipTemp').textContent = d.temp.current.toFixed(1) + '°';
         $('chipMin').textContent = d.temp.min.toFixed(1) + '°';
@@ -130,6 +190,14 @@ function selectCamera(camera) {
     });
     $('cameraPanel').setAttribute('aria-labelledby', `tab-${camera}`);
     closeLightbox();
+    closeReader();
+    state.weatherHistoryRequest += 1;
+    state.weatherRecords = [];
+    if (chart) { chart.destroy(); chart = null; }
+    state.weatherStation = state.cameras.get(camera)?.weather || null;
+    $('weatherChip').hidden = true;
+    showWeatherStation(state.weatherStation, 'Načítám data…');
+    loadWeather();
     resetArchive();
     updateCameraInfo();
     loadMore();
@@ -361,18 +429,39 @@ function closeReader() {
 
 async function loadWeatherRange(hours) {
     state.metricWindow = hours;
+    const camera = state.camera;
+    const request = ++state.weatherHistoryRequest;
+    state.weatherRecords = [];
+    if (chart) { chart.destroy(); chart = null; }
+    $('readerCoverage').textContent = 'Načítám historii…';
     try {
-        const r = await fetch(`/api/weather/history?hours=${hours}`);
+        const r = await fetch(`/api/weather/history?camera=${encodeURIComponent(camera)}&hours=${hours}`);
+        if (!r.ok) throw new Error('Weather history unavailable');
         const j = await r.json();
+        if (request !== state.weatherHistoryRequest || camera !== state.camera) return;
+        state.weatherStation = j.station;
         state.weatherRecords = j.success ? j.data : [];
+        const metrics = Object.keys(metricConfig).filter(metric => state.weatherRecords.some(row => typeof row[metric] === 'number'));
+        updateMetricAvailability(metrics);
+        $('readerStation').textContent = `${j.station.kind === 'model' ? 'Modelový odhad' : 'Měření'} · ${j.station.name}`;
+        $('readerCoverage').textContent = j.coverage_start
+            ? `Dostupná data: ${weatherTime(j.coverage_start)} – ${weatherTime(j.coverage_end)}. Chybějící měření se nedoplňují odhadem.`
+            : 'Pro toto období zatím nejsou dostupná data.';
     } catch (e) {
+        if (request !== state.weatherHistoryRequest || camera !== state.camera) return;
         state.weatherRecords = [];
+        $('readerCoverage').textContent = 'Historii počasí se nepodařilo načíst.';
     }
     renderChart();
 }
 
 function renderChart() {
-    const cfg = metricConfig[state.metric];
+    const cfg = { ...metricConfig[state.metric] };
+    if (state.metric === 'rain' && state.weatherStation) {
+        cfg.title = state.weatherStation.rain_interval_minutes
+            ? `Rainfall / ${state.weatherStation.rain_interval_minutes} min` : 'Rainfall (station counter)';
+    }
+    if (state.metric === 'bar' && state.weatherStation && state.weatherStation.id !== 'bufet') cfg.title = 'Station pressure';
     $('readerTitle').textContent = cfg.title;
     const ctx = $('chart').getContext('2d');
     if (chart) chart.destroy();
@@ -388,7 +477,7 @@ function renderChart() {
             labels: data.map(d => new Date(d.timestamp)),
             datasets: [{
                 label: `${cfg.title}${cfg.unit ? ' (' + cfg.unit.trim() + ')' : ''}`,
-                data: data.map(d => d[state.metric]),
+                data: data.map(d => typeof d[state.metric] === 'number' ? d[state.metric] : null),
                 borderColor: cfg.color,
                 backgroundColor: cfg.color + '22',
                 fill: true,

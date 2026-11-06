@@ -1,3 +1,27 @@
+# 3.0.0-rc.2 — Per-camera weather
+
+Release branch remains `release/3.0.0-multicamera`. The preview container now
+uses image `krkonose_live:3.0.0-rc.2` on host port **8004**; stable **8003** and
+`master` are unchanged.
+
+- Bedřichov and Hotel Bedřiška share ČHMÚ Pec pod Sněžkou weather.
+- Klínové boudy shares the existing bufet / Chalupa na Rozcestí weather.
+- Luční bouda and Sněžka use their own ČHMÚ observations.
+- Svatý Petr – Pláň uses an explicitly labelled Open-Meteo model estimate.
+- Weather chip and charts follow the selected camera, with source/station,
+  observation time, shared-station notes, stale/error states and real coverage.
+- Missing sensors are disabled, not fabricated as zeros. Rain intervals and
+  station pressure are identified. Older camera/range requests cannot overwrite
+  a newer selection.
+- New weather caches are stored only in the release data directory and shared
+  between cameras using the same station. Production weather remains read-only.
+- Verified live responses for all eight camera mappings; 31 Python tests,
+  2 frontend configuration tests and 2 Chromium integration tests passed.
+
+The original rc.1 release notes below are retained as a historical record.
+
+---
+
 # 3.0.0-rc.1 — Multi-camera preview
 
 Release branch: `release/3.0.0-multicamera`.

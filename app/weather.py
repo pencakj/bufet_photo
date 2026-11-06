@@ -107,6 +107,7 @@ def stats(hours: int = 24) -> dict[str, Any] | None:
         "uvi": latest.get("uvi"),
         "solarrad": latest.get("solarrad"),
         "count": len(temps),
+        "observed_at": latest["timestamp"],
     }
 
 

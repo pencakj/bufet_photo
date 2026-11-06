@@ -99,6 +99,8 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .camera-info { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; font-size: 0.72rem; color: var(--ink-soft); }
 .camera-info a { text-decoration: underline; text-underline-offset: 3px; }
 .weather-station-note { font-size: 0.65rem; color: var(--ink-mute); margin: 0.5rem 0 1.5rem; }
+.pill:disabled { opacity: 0.4; cursor: not-allowed; }
+#weatherSource { display: inline-block; margin-top: -1rem; text-decoration: underline; text-underline-offset: 3px; }
 .archive-message { padding: 2rem 0; color: var(--ink-soft); text-align: center; }
 
 /* Masthead */

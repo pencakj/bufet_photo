@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 import imagestore
+import localweather
 import weather
 from cameras import CAMERAS, DEFAULT_CAMERA, get_camera
 from solar import TZ, is_daytime
@@ -32,6 +33,7 @@ PORT = 8003
 async def lifespan(app: FastAPI):
     stop = threading.Event()
     threading.Thread(target=imagestore.run_capture_loop, args=(stop,), daemon=True).start()
+    threading.Thread(target=localweather.run_poll_loop, args=(stop,), daemon=True).start()
     # The release reads the production station; only production polls/writes it.
     if os.environ.get("WEATHER_POLL_ENABLED", "false").lower() == "true":
         threading.Thread(target=weather.run_poll_loop, daemon=True).start()
@@ -42,7 +44,7 @@ async def lifespan(app: FastAPI):
         stop.set()
 
 
-app = FastAPI(title="Krkonoše Live", version="3.0.0-rc.1", lifespan=lifespan)
+app = FastAPI(title="Krkonoše Live", version="3.0.0-rc.2", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -79,8 +81,8 @@ def valid_camera(camera_id: str):
 
 @app.get("/api/cameras")
 def api_cameras():
-    return {"cameras": [imagestore.camera_status(camera.id) for camera in CAMERAS],
-            "weather_station": "Chalupa na Rozcestí"}
+    return {"cameras": [{**imagestore.camera_status(camera.id),
+                         "weather": localweather.metadata(camera.id)} for camera in CAMERAS]}
 
 
 @app.get("/api/images")
@@ -147,20 +149,24 @@ def serve_thumb(filename: str, camera: str = DEFAULT_CAMERA):
 
 
 @app.get("/api/weather/current")
-def api_weather_current():
+def api_weather_current(camera: str = DEFAULT_CAMERA):
+    valid_camera(camera)
     try:
-        return {"success": True, "data": weather.stats(24)}
+        return localweather.current(camera)
     except Exception as e:
         logger.error("Weather stats error: %s", e)
         return JSONResponse({"success": False, "error": "Weather data unavailable"}, status_code=500)
 
 
 @app.get("/api/weather/history")
-def api_weather_history(hours: Annotated[int, Query(ge=1, le=720)] = 24):
+def api_weather_history(hours: Annotated[int, Query(ge=1, le=720)] = 24, camera: str = DEFAULT_CAMERA):
+    valid_camera(camera)
     try:
-        hours = min(hours, 24 * 30)
-        records = weather.history(hours)
-        return {"success": True, "data": records, "count": len(records)}
+        records = localweather.history(camera, hours)
+        return {"success": True, "data": records, "count": len(records),
+                "station": localweather.metadata(camera),
+                "coverage_start": records[0]["timestamp"] if records else None,
+                "coverage_end": records[-1]["timestamp"] if records else None}
     except Exception as e:
         logger.error("Weather history error: %s", e)
         return JSONResponse({"success": False, "error": "Weather data unavailable"}, status_code=500)

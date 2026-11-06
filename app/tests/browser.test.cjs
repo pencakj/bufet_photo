@@ -73,3 +73,64 @@ test('release camera tabs, archives, charts and mobile layout', { timeout: 12000
         await browser.close();
     }
 });
+
+test('weather follows camera mappings, missing sensors and request races', { timeout: 120000 }, async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+        const page = await browser.newPage();
+        const errors = [];
+        page.on('pageerror', error => errors.push(error.message));
+        await page.goto(process.env.APP_URL || 'http://localhost:8004/');
+        for (const [camera, station] of [
+            ['rozcesti', 'bufet'], ['pec', 'pec'], ['bedrichov', 'pec'], ['bedriska', 'pec'],
+            ['klinove-boudy', 'bufet'], ['lucni-bouda', 'lucni'], ['snezka', 'snezka'], ['svaty-petr', 'plan'],
+        ]) {
+            await page.locator(`#tab-${camera}`).click();
+            await page.waitForFunction(id => state.weatherStation?.id === id
+                && !document.querySelector('#weatherChip').hidden
+                && document.querySelector('#weatherStationNote').textContent.includes('Čas dat:'), station);
+            const note = await page.locator('#weatherStationNote').textContent();
+            if (station === 'plan') assert.ok(note.includes('Modelový odhad'));
+            else assert.ok(note.includes('Měření:'));
+            if (['bedrichov', 'bedriska', 'klinove-boudy'].includes(camera)) assert.ok(note.includes('Sdílená stanice'));
+            await page.locator('#weatherChip').click();
+            await page.waitForFunction(() => !!Chart.getChart(document.querySelector('#chart')));
+            const label = await page.locator('#readerStation').textContent();
+            if (station === 'pec') assert.ok(label.includes('Pec pod Sněžkou'));
+            if (station === 'snezka') {
+                assert.equal(await page.locator('[data-metric="uvi"]').isDisabled(), true);
+                assert.equal(await page.locator('[data-metric="bar"]').isDisabled(), true);
+            }
+            await page.keyboard.press('Escape');
+        }
+
+        // Delayed Pec data must not overwrite a newer Luční bouda selection.
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        let entered;
+        const intercepted = new Promise(resolve => { entered = resolve; });
+        await page.route('**/api/weather/current?camera=pec', async route => {
+            entered();
+            await gate;
+            await route.continue();
+        });
+        await page.locator('#tab-pec').click();
+        await intercepted;
+        await page.locator('#tab-lucni-bouda').click();
+        await page.waitForFunction(() => state.weatherStation?.id === 'lucni' && !document.querySelector('#weatherChip').hidden);
+        const response = page.waitForResponse(r => r.url().includes('/api/weather/current?camera=pec'));
+        release();
+        await response;
+        assert.equal(await page.evaluate(() => state.weatherStation.id), 'lucni');
+        assert.ok((await page.locator('#weatherStationNote').textContent()).includes('Luční bouda'));
+
+        await page.route('**/api/weather/current?camera=bedriska', route => route.fulfill({ status: 500, body: '{}' }));
+        await page.locator('#tab-bedriska').click();
+        await page.waitForFunction(() => document.querySelector('#weatherStationNote').textContent.includes('není dostupné'));
+        assert.equal(await page.locator('#weatherChip').isHidden(), true);
+        assert.ok((await page.locator('#weatherStationNote').textContent()).includes('Pec pod Sněžkou'));
+        assert.deepEqual(errors, []);
+    } finally {
+        await browser.close();
+    }
+});
