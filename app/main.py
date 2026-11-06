@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 import imagestore
 import localweather
@@ -34,6 +35,7 @@ async def lifespan(app: FastAPI):
     stop = threading.Event()
     threading.Thread(target=imagestore.run_capture_loop, args=(stop,), daemon=True).start()
     threading.Thread(target=localweather.run_poll_loop, args=(stop,), daemon=True).start()
+    await run_in_threadpool(imagestore.list_images, DEFAULT_CAMERA)
     # The release reads the production station; only production polls/writes it.
     if os.environ.get("WEATHER_POLL_ENABLED", "false").lower() == "true":
         threading.Thread(target=weather.run_poll_loop, daemon=True).start()
@@ -44,7 +46,7 @@ async def lifespan(app: FastAPI):
         stop.set()
 
 
-app = FastAPI(title="Krkonoše Live", version="3.0.0-rc.2", lifespan=lifespan)
+app = FastAPI(title="Krkonoše Live", version="3.0.0-rc.3", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -146,6 +148,26 @@ def serve_thumb(filename: str, camera: str = DEFAULT_CAMERA):
         media_type="image/jpeg",
         headers={"Cache-Control": "public, max-age=31536000"},
     )
+
+
+@app.get("/previews/{filename:path}")
+def serve_preview(filename: str, camera: str = DEFAULT_CAMERA,
+                  width: Annotated[int, Query(ge=640, le=1280)] = 1280):
+    valid_camera(camera)
+    if width not in imagestore.PREVIEW_WIDTHS:
+        raise HTTPException(422, "Preview width must be 640 or 1280")
+    images, _ = imagestore.directories(camera)
+    original = image_path(images, filename)
+    # The archive is flat; do not allow nested paths to alias cache filenames.
+    if original.parent != images.resolve():
+        raise HTTPException(404, "Image not found")
+    preview = imagestore.make_preview(original, camera, width)
+    # Some video snapshots are already very compact JPEGs. Never transfer a
+    # larger derivative just because its format is WebP.
+    if preview is not None and preview.stat().st_size >= original.stat().st_size:
+        preview = None
+    return FileResponse(preview or original, media_type="image/webp" if preview else "image/jpeg",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @app.get("/api/weather/current")

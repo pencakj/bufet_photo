@@ -43,7 +43,7 @@ test('release camera tabs, archives, charts and mobile layout', { timeout: 12000
         await page.waitForFunction(() => !state.loading && state.order === 'asc');
         await page.locator('#themeToggle').click();
         await page.locator('#weatherChip').click();
-        await page.waitForFunction(() => !!Chart.getChart(document.querySelector('#chart')));
+        await page.waitForFunction(() => typeof Chart !== 'undefined' && !!Chart.getChart(document.querySelector('#chart')));
         const axis = await page.evaluate(() => {
             const chart = Chart.getChart(document.querySelector('#chart'));
             const scale = chart.scales.y;
@@ -94,7 +94,7 @@ test('weather follows camera mappings, missing sensors and request races', { tim
             else assert.ok(note.includes('Měření:'));
             if (['bedrichov', 'bedriska', 'klinove-boudy'].includes(camera)) assert.ok(note.includes('Sdílená stanice'));
             await page.locator('#weatherChip').click();
-            await page.waitForFunction(() => !!Chart.getChart(document.querySelector('#chart')));
+            await page.waitForFunction(() => typeof Chart !== 'undefined' && !!Chart.getChart(document.querySelector('#chart')));
             const label = await page.locator('#readerStation').textContent();
             if (station === 'pec') assert.ok(label.includes('Pec pod Sněžkou'));
             if (station === 'snezka') {
@@ -129,6 +129,36 @@ test('weather follows camera mappings, missing sensors and request races', { tim
         await page.waitForFunction(() => document.querySelector('#weatherStationNote').textContent.includes('není dostupné'));
         assert.equal(await page.locator('#weatherChip').isHidden(), true);
         assert.ok((await page.locator('#weatherStationNote').textContent()).includes('Pec pod Sněžkou'));
+        assert.deepEqual(errors, []);
+    } finally {
+        await browser.close();
+    }
+});
+
+test('photos use responsive previews without waiting for chart CDN', { timeout: 60000 }, async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+        const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+        const requests = [];
+        const errors = [];
+        page.on('request', request => requests.push(request.url()));
+        page.on('pageerror', error => errors.push(error.message));
+        await page.route('**/cdn.jsdelivr.net/**', route => route.abort());
+        await page.goto(process.env.APP_URL || 'http://localhost:8004/');
+        await page.waitForFunction(() => {
+            const image = document.querySelector('#heroImage');
+            return image.complete && image.naturalWidth > 0 && image.style.opacity === '1';
+        });
+        const src = await page.locator('#heroImage').evaluate(image => image.currentSrc);
+        assert.ok(src.includes('/previews/') && src.includes('width=640'), src);
+        assert.equal(requests.some(url => new URL(url).hostname === 'cdn.jsdelivr.net'), false);
+        assert.equal(requests.some(url => new URL(url).pathname.startsWith('/images/')), false);
+        await page.locator('#heroFigure').click();
+        await page.waitForFunction(() => document.querySelector('#lbImage').complete && document.querySelector('#lbImage').naturalWidth > 0);
+        assert.ok((await page.locator('#lbImage').getAttribute('src')).startsWith('/images/'));
+        await page.keyboard.press('Escape');
+        await page.locator('#weatherChip').click();
+        await page.waitForFunction(() => document.querySelector('#readerCoverage').textContent.includes('nepodařilo načíst'));
         assert.deepEqual(errors, []);
     } finally {
         await browser.close();

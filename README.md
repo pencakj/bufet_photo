@@ -119,6 +119,24 @@ not delete bind-mounted archives. Do not run stable's commands from this directo
 
 ## Runtime and security
 
+### Image delivery (3.0.0-rc.3)
+
+The main photo uses a responsive 640/1280-pixel display preview, normally WebP.
+If an original video JPEG is smaller than its WebP copy, the endpoint serves
+the original JPEG rather than increasing download size. Opening the lightbox
+still requests the full-resolution original. Neither original photos nor
+production thumbnails are modified.
+
+Previews are cached at
+`/appl/data/krkonose_live_release/previews/<camera-id>/`. New captures pre-generate
+them; original-camera previews are created on demand in release storage.
+The API is `/previews/<image-filename>?camera=pec&width=1280`, with only 640 or
+1280 accepted. On low disk space it falls back to the original, without deleting
+archives. The display cache is not automatically pruned; include it in storage
+monitoring. Chart libraries load on demand instead of delaying photo startup.
+
+### Runtime hardening
+
 - Python 3.15.2; direct dependencies pinned in `app/requirements.txt`.
 - Minimal FFmpeg **9.0.2** built from checksum-pinned upstream source in a
   separate build stage. Only HLS/HTTPS, required video decoding, scaling and

@@ -25,6 +25,8 @@ IMAGES_DIR = Path("/app/images")
 THUMBS_DIR = Path("/app/thumbnails")
 DATA_DIR = Path(os.environ.get("CAMERA_DATA_DIR", "/app/camera-data"))
 THUMB_SIZE = (400, 400)
+PREVIEW_WIDTHS = (640, 1280)
+_preview_slots = threading.Semaphore(2)
 MAX_IMAGE_BYTES = 16 * 1024 * 1024
 MIN_FREE_BYTES = 512 * 1024 * 1024
 IMAGE_NAME = re.compile(r"^image_\d{8}_\d{6}\.jpg$")
@@ -58,6 +60,7 @@ class Archive:
         self.lock = threading.Lock()
         self.entries: list[dict] = []
         self.refreshed = float("-inf")
+        self.directory_version = None
         self.last_error: str | None = None
         if not get_camera(camera_id).read_only:
             self.images.mkdir(parents=True, exist_ok=True)
@@ -66,6 +69,11 @@ class Archive:
     def list(self) -> list[dict]:
         with self.lock:
             if time.monotonic() - self.refreshed < 10:
+                return list(self.entries)
+            version = tuple(path.stat().st_mtime_ns if path.exists() else None
+                            for path in (self.images, self.thumbs))
+            if version == self.directory_version:
+                self.refreshed = time.monotonic()
                 return list(self.entries)
             names = {n for n in os.listdir(self.images) if IMAGE_NAME.fullmatch(n)} if self.images.exists() else set()
             thumbs = set(os.listdir(self.thumbs)) if self.thumbs.exists() else set()
@@ -77,11 +85,13 @@ class Archive:
                 key=lambda item: item["timestamp"], reverse=True,
             )
             self.refreshed = time.monotonic()
+            self.directory_version = version
             return list(self.entries)
 
     def invalidate(self):
         with self.lock:
             self.refreshed = float("-inf")
+            self.directory_version = None
 
 
 def archive(camera_id: str = DEFAULT_CAMERA) -> Archive:
@@ -127,6 +137,32 @@ def make_thumbnail(image_path: Path, camera_id: str = DEFAULT_CAMERA) -> Path | 
         return target
     except Exception:
         logger.exception("Thumbnail failed for %s", image_path)
+        return None
+
+
+def make_preview(image_path: Path, camera_id: str = DEFAULT_CAMERA, width: int = 1280) -> Path | None:
+    """WebP display copies live only in release storage, including legacy photos."""
+    get_camera(camera_id)
+    if width not in PREVIEW_WIDTHS:
+        raise ValueError("Unsupported preview width")
+    target = DATA_DIR / "previews" / camera_id / f"{image_path.stem}_{width}.webp"
+    try:
+        if target.is_file():
+            return target
+        with _preview_slots:
+            if target.is_file():
+                return target
+            if shutil.disk_usage(DATA_DIR).free < MIN_FREE_BYTES:
+                return None
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(image_path) as image:
+                image.thumbnail((width, width), Image.Resampling.LANCZOS)
+                output = io.BytesIO()
+                image.convert("RGB").save(output, "WEBP", quality=80, method=4)
+            _atomic_write(target, output.getvalue())
+        return target
+    except Exception:
+        logger.exception("Preview failed for %s", image_path)
         return None
 
 
@@ -185,6 +221,8 @@ def capture_once(camera_id: str = DEFAULT_CAMERA) -> Path | None:
         target = store.images / f"image_{timestamp}.jpg"
         _atomic_write(target, content)
         make_thumbnail(target, camera_id)
+        for width in PREVIEW_WIDTHS:
+            make_preview(target, camera_id, width)
         store.invalidate()
         with store.lock:
             store.last_error = None

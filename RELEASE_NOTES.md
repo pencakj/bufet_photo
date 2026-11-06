@@ -1,3 +1,39 @@
+# 3.0.0-rc.3 — Faster image delivery
+
+Release preview remains on **8004**; stable **8003** and `master` are unchanged.
+Image tag: `krkonose_live:3.0.0-rc.3`.
+
+- Responsive 640/1280-pixel WebP display previews instead of downloading the
+  full JPEG for the main photo. Full-resolution originals remain unchanged and
+  are requested for the lightbox. Already compact JPEGs are served directly if
+  conversion would increase the transfer size.
+- Preview cache lives only in release storage, including previews of the
+  read-only original camera. New captures pre-generate display sizes; legacy
+  previews are generated on demand with bounded concurrency and atomic writes.
+- Directory modification times avoid rebuilding the 109k-photo archive when
+  files have not changed. The original index is warmed before serving traffic.
+- Chart.js and its date adapter load only when a weather chart is opened,
+  retaining version and integrity checks. A blocked chart CDN no longer holds
+  up photos; chart loading errors are displayed separately.
+- Main image requests have high fetch priority. Mobile selects the smaller
+  preview; the original archive and its thumbnails are not rewritten.
+
+Measured in Chromium with a fresh browser context at 1280×900, a simulated
+3 Mb/s connection and 80 ms latency: first main photo fully visible in about
+**6.7 s before → 1.8 s after** (server preview cache warm). The original camera's
+display transfer fell from about **1.8 MB → 195 KB**. JPEG cameras' 1280-pixel
+display copies were 89–95% smaller in the live sample. Results depend on the
+connection, photo and cache state; first-time preview generation adds work.
+
+Verification: 37 Python tests, 2 chart configuration tests and 3 Chromium
+integration tests passed. Tests cover preview dimensions/caching, unchanged
+original bytes, invalid paths/sizes, low-disk fallback, unchanged-directory
+cache reuse, mobile size selection, full-resolution lightbox and photos loading
+with the chart CDN blocked. All eight cameras' previews were checked not to
+exceed their original JPEG transfer size. Both containers remained healthy.
+
+---
+
 # 3.0.0-rc.2 — Per-camera weather
 
 Release branch remains `release/3.0.0-multicamera`. The preview container now

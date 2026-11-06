@@ -35,6 +35,31 @@ const metricConfig = {
 };
 
 let chart = null;
+let chartLibraries = null;
+let chartsReady = false;
+
+function loadChartScript(src, integrity) {
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.integrity = integrity;
+        script.crossOrigin = 'anonymous';
+        script.onload = resolve;
+        script.onerror = () => { script.remove(); reject(new Error('Chart library unavailable')); };
+        document.head.appendChild(script);
+    });
+}
+
+function ensureChartLibraries() {
+    if (!chartLibraries) {
+        chartLibraries = (async () => {
+            await loadChartScript('https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js', 'sha384-Emf5ZVIUiarAdhkgtqK+5/Z5qIvM6QoVrS+qAVtfyZVuD5lIHrac0me485+Antp0');
+            await loadChartScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js', 'sha384-cVMg8E3QFwTvGCDuK+ET4PD341jF3W8nO1auiXfuZNQkzbUUiBGLsIQUE+b1mxws');
+            chartsReady = true;
+        })().catch(error => { chartLibraries = null; throw error; });
+    }
+    return chartLibraries;
+}
 
 // Theme
 function initTheme() {
@@ -150,6 +175,10 @@ function thumbUrl(filename, camera = state.camera) {
     return `/thumbnails/${encodeURIComponent(filename)}?camera=${encodeURIComponent(camera)}`;
 }
 
+function previewUrl(filename, width, camera = state.camera) {
+    return `/previews/${encodeURIComponent(filename)}?camera=${encodeURIComponent(camera)}&width=${width}&v=1`;
+}
+
 async function loadCameras() {
     try {
         const response = await fetch('/api/cameras');
@@ -252,12 +281,21 @@ function updateNumbers() {
 
 function renderHero(img) {
     const heroImg = $('heroImage');
-    heroImg.src = imageUrl(img.path);
+    heroImg.style.opacity = 0;
     heroImg.alt = `Photograph from ${img.formatted_time}`;
     heroImg.onload = () => {
         heroImg.style.opacity = 1;
     };
-    heroImg.style.opacity = 0;
+    heroImg.onerror = () => {
+        heroImg.onerror = null;
+        heroImg.removeAttribute('srcset');
+        heroImg.src = imageUrl(img.path);
+    };
+    heroImg.fetchPriority = 'high';
+    heroImg.decoding = 'async';
+    heroImg.sizes = '(max-width: 700px) calc(100vw - 32px), 1200px';
+    heroImg.srcset = `${previewUrl(img.path, 640)} 640w, ${previewUrl(img.path, 1280)} 1280w`;
+    heroImg.src = previewUrl(img.path, 1280);
     $('heroTime').textContent = img.formatted_time;
     $('heroPlate').textContent = state.order === 'desc' ? 'Most recent' : 'Earliest';
     $('heroNum').textContent = (state.total || '—').toString();
@@ -382,6 +420,7 @@ function resetArchive() {
     $('archive').innerHTML = '';
     $('archiveMessage').hidden = true;
     $('heroImage').removeAttribute('src');
+    $('heroImage').removeAttribute('srcset');
     $('heroImage').alt = '';
     $('heroImage').style.opacity = 0;
     $('heroFigure').onclick = null;
@@ -419,6 +458,14 @@ function navigate(dir) {
 async function openReader() {
     $('reader').hidden = false;
     document.body.style.overflow = 'hidden';
+    $('readerCoverage').textContent = 'Načítám graf…';
+    try {
+        await ensureChartLibraries();
+    } catch (error) {
+        $('readerCoverage').textContent = 'Knihovnu grafů se nepodařilo načíst. Zavřete a otevřete graf pro opakování.';
+        return;
+    }
+    if ($('reader').hidden) return;
     await loadWeatherRange(state.metricWindow);
 }
 
@@ -456,6 +503,7 @@ async function loadWeatherRange(hours) {
 }
 
 function renderChart() {
+    if (!chartsReady) return;
     const cfg = { ...metricConfig[state.metric] };
     if (state.metric === 'rain' && state.weatherStation) {
         cfg.title = state.weatherStation.rain_interval_minutes
