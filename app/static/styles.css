@@ -38,6 +38,7 @@
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body {
     background: var(--paper);
@@ -88,6 +89,19 @@ body {
 
 a { color: inherit; text-decoration: none; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+/* Camera tabs stay horizontally scrollable on small screens. */
+.camera-tabs { display: flex; gap: 0.35rem; overflow-x: auto; padding: 0.3rem 0 0.75rem; border-bottom: 1px solid var(--rule); margin-bottom: 1rem; }
+.camera-tab { flex: 0 0 auto; padding: 0.7rem 0.9rem; border: 1px solid transparent; border-radius: 8px; font-size: 0.78rem; color: var(--ink-soft); }
+.camera-tab:hover { background: var(--card-shade); }
+.camera-tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.camera-tab:focus-visible, #cameraPanel:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.camera-info { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; font-size: 0.72rem; color: var(--ink-soft); }
+.camera-info a { text-decoration: underline; text-underline-offset: 3px; }
+.weather-station-note { font-size: 0.65rem; color: var(--ink-mute); margin: 0.5rem 0 1.5rem; }
+.pill:disabled { opacity: 0.4; cursor: not-allowed; }
+#weatherSource { display: inline-block; margin-top: -1rem; text-decoration: underline; text-underline-offset: 3px; }
+.archive-message { padding: 2rem 0; color: var(--ink-soft); text-align: center; }
 
 /* Masthead */
 .masthead {

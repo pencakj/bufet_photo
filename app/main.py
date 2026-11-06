@@ -1,9 +1,11 @@
-"""Krkonoše Live v2 — FastAPI entrypoint."""
+"""Krkonoše Live v3 — camera-scoped archives and snapshots."""
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -11,10 +13,13 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 import imagestore
+import localweather
 import weather
-from solar import is_daytime
+from cameras import CAMERAS, DEFAULT_CAMERA, get_camera, read_only_mode
+from solar import TZ, is_daytime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,25 +27,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-PORT = 8003
+PORT = 8000
+
+
+def collectors_enabled() -> bool:
+    return os.environ.get("COLLECTORS_ENABLED", "true").lower() == "true" and not read_only_mode()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    stop = threading.Event()
+    if collectors_enabled():
+        threading.Thread(target=imagestore.run_capture_loop, args=(stop,), daemon=True).start()
+        threading.Thread(target=localweather.run_poll_loop, args=(stop,), daemon=True).start()
+    await run_in_threadpool(imagestore.list_images, DEFAULT_CAMERA)
+    if collectors_enabled() and os.environ.get("WEATHER_POLL_ENABLED", "false").lower() == "true":
+        threading.Thread(target=weather.run_poll_loop, daemon=True).start()
+    logger.info("Serving in %s mode", "collector" if collectors_enabled() else "read-only viewer")
     try:
-        data = weather.fetch()
-        if data:
-            weather.save(data)
-    except Exception as e:
-        logger.error("Startup weather fetch failed: %s", e)
-
-    threading.Thread(target=imagestore.run_capture_loop, daemon=True).start()
-    threading.Thread(target=weather.run_poll_loop, daemon=True).start()
-    logger.info("Background workers started")
-    yield
+        yield
+    finally:
+        stop.set()
 
 
-app = FastAPI(title="Krkonoše Live", version="2.0", lifespan=lifespan)
+app = FastAPI(title="Krkonoše Live", version="3.0.0", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -50,7 +60,7 @@ def home(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"is_daytime": is_daytime()},
+        context={"is_daytime": is_daytime(), "cameras": CAMERAS, "is_preview": read_only_mode()},
     )
 
 
@@ -68,20 +78,38 @@ def image_path(directory: Path, filename: str) -> Path:
     return path
 
 
+def valid_camera(camera_id: str):
+    try:
+        return get_camera(camera_id)
+    except KeyError:
+        raise HTTPException(404, "Unknown camera") from None
+
+
+@app.get("/api/cameras")
+def api_cameras():
+    return {"cameras": [{**imagestore.camera_status(camera.id),
+                         "weather": localweather.metadata(camera.id)} for camera in CAMERAS]}
+
+
 @app.get("/api/images")
 def api_images(
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
     order: Literal["asc", "desc"] = "desc",
+    camera: str = DEFAULT_CAMERA,
 ):
-    images = imagestore.list_images()
+    valid_camera(camera)
+    images = imagestore.list_images(camera)
     if order.lower() == "asc":
         images = list(reversed(images))
     total = len(images)
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
     page = images[offset : offset + limit]
     return {
         "images": page,
         "total": total,
+        "today_count": sum(image["day"] == today for image in images),
+        "camera": camera,
         "offset": offset,
         "limit": limit,
         "has_more": (offset + limit) < total,
@@ -90,17 +118,23 @@ def api_images(
 
 
 @app.get("/api/generate-thumbnail/{filename:path}")
-def api_generate_thumbnail(filename: str):
-    path = image_path(imagestore.IMAGES_DIR, filename)
-    thumb = imagestore.make_thumbnail(path)
+def api_generate_thumbnail(filename: str, camera: str = DEFAULT_CAMERA):
+    source = valid_camera(camera)
+    images, thumbs = imagestore.directories(camera)
+    path = image_path(images, filename)
+    if source.read_only and not (thumbs / f"thumb_{path.name}").is_file():
+        raise HTTPException(404, "Thumbnail unavailable for read-only archive")
+    thumb = imagestore.make_thumbnail(path, camera)
     if thumb is None:
         raise HTTPException(500, "Failed to create thumbnail")
     return {"success": True, "thumb_path": f"thumb_{filename}"}
 
 
 @app.get("/images/{filename:path}")
-def serve_image(filename: str):
-    path = image_path(imagestore.IMAGES_DIR, filename)
+def serve_image(filename: str, camera: str = DEFAULT_CAMERA):
+    valid_camera(camera)
+    images, _ = imagestore.directories(camera)
+    path = image_path(images, filename)
     return FileResponse(
         path,
         media_type="image/jpeg",
@@ -109,8 +143,10 @@ def serve_image(filename: str):
 
 
 @app.get("/thumbnails/{filename:path}")
-def serve_thumb(filename: str):
-    path = image_path(imagestore.THUMBS_DIR, filename)
+def serve_thumb(filename: str, camera: str = DEFAULT_CAMERA):
+    valid_camera(camera)
+    _, thumbs = imagestore.directories(camera)
+    path = image_path(thumbs, filename)
     return FileResponse(
         path,
         media_type="image/jpeg",
@@ -118,21 +154,45 @@ def serve_thumb(filename: str):
     )
 
 
+@app.get("/previews/{filename:path}")
+def serve_preview(filename: str, camera: str = DEFAULT_CAMERA,
+                  width: Annotated[int, Query(ge=640, le=1280)] = 1280):
+    valid_camera(camera)
+    if width not in imagestore.PREVIEW_WIDTHS:
+        raise HTTPException(422, "Preview width must be 640 or 1280")
+    images, _ = imagestore.directories(camera)
+    original = image_path(images, filename)
+    # The archive is flat; do not allow nested paths to alias cache filenames.
+    if original.parent != images.resolve():
+        raise HTTPException(404, "Image not found")
+    preview = imagestore.make_preview(original, camera, width)
+    # Some video snapshots are already very compact JPEGs. Never transfer a
+    # larger derivative just because its format is WebP.
+    if preview is not None and preview.stat().st_size >= original.stat().st_size:
+        preview = None
+    return FileResponse(preview or original, media_type="image/webp" if preview else "image/jpeg",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
 @app.get("/api/weather/current")
-def api_weather_current():
+def api_weather_current(camera: str = DEFAULT_CAMERA):
+    valid_camera(camera)
     try:
-        return {"success": True, "data": weather.stats(24)}
+        return localweather.current(camera)
     except Exception as e:
         logger.error("Weather stats error: %s", e)
         return JSONResponse({"success": False, "error": "Weather data unavailable"}, status_code=500)
 
 
 @app.get("/api/weather/history")
-def api_weather_history(hours: Annotated[int, Query(ge=1, le=720)] = 24):
+def api_weather_history(hours: Annotated[int, Query(ge=1, le=720)] = 24, camera: str = DEFAULT_CAMERA):
+    valid_camera(camera)
     try:
-        hours = min(hours, 24 * 30)
-        records = weather.history(hours)
-        return {"success": True, "data": records, "count": len(records)}
+        records = localweather.history(camera, hours)
+        return {"success": True, "data": records, "count": len(records),
+                "station": localweather.metadata(camera),
+                "coverage_start": records[0]["timestamp"] if records else None,
+                "coverage_end": records[-1]["timestamp"] if records else None}
     except Exception as e:
         logger.error("Weather history error: %s", e)
         return JSONResponse({"success": False, "error": "Weather data unavailable"}, status_code=500)

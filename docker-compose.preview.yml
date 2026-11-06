@@ -1,0 +1,33 @@
+name: krkonose_live_release
+
+services:
+  krkonose_live:
+    image: krkonose_live:3.0.0
+    container_name: krkonose_live_release
+    ports:
+      - "8004:8000"
+    volumes:
+      - /appl/data/bufet/data/images:/app/images:ro
+      - /appl/data/bufet/data/thumbnails:/app/thumbnails:ro
+      - /appl/data/bufet/data/weather:/app/data:ro
+      - /appl/data/krkonose_live_release:/app/camera-data:ro
+    environment:
+      LEGACY_READ_ONLY: "true"
+      WEATHER_POLL_ENABLED: "false"
+      COLLECTORS_ENABLED: "false"
+      READ_ONLY_MODE: "true"
+    user: "1001:1001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped

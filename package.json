@@ -1,0 +1,11 @@
+{
+  "name": "krkonose-live-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test app/tests/chart.test.cjs",
+    "test:browser": "node --test app/tests/browser.test.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.65.0"
+  }
+}

@@ -25,7 +25,7 @@ function render(metric, values) {
         timestamp: `2026-11-06T${String(i).padStart(2, '0')}:00:00`,
         [metric]: value,
     }));
-    vm.runInContext('state.metric = metric; state.weatherRecords = records; renderChart();', context);
+    vm.runInContext('chartsReady = true; state.metric = metric; state.weatherRecords = records; renderChart();', context);
     return config;
 }
 
