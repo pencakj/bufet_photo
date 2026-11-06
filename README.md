@@ -1,4 +1,4 @@
-# Krkonoše Live 3.0.0
+# Krkonoše Live 3.0.1
 
 Eight-camera Krkonoše photo archive with per-location weather, responsive
 previews, full-resolution lightbox, themes and dynamically scaled charts.
@@ -18,7 +18,7 @@ docker compose logs --tail 50 krkonose_live
 
 Open **http://localhost:8000**. The container, Dockerfile, direct Python
 entrypoint and health check all use port **8000**. The Compose project and
-container are named `krkonose_live`, using image `krkonose_live:3.0.0`.
+container are named `krkonose_live`, using image `krkonose_live:3.0.1`.
 Health endpoint: `/healthz`.
 
 To refresh dependencies/OS packages, update the appropriate pins, then run:
@@ -70,8 +70,12 @@ Camera archives use `<camera-id>/{images,thumbnails}`; display copies use
 `previews/<camera-id>/`, and additional weather caches use `weather/`.
 Photo/weather data, credentials and generated reports are excluded from Git.
 
-Capture schedule: 10 minutes in daylight, 2 minutes near sunrise/sunset during
-daylight, 30 minutes overnight; at most three cameras capture simultaneously.
+Capture schedule for all eight cameras: 30 minutes in daylight, 5 minutes for
+the first 30 minutes after sunrise and last 30 minutes before sunset, and
+once per hour overnight. Solar windows get six captures anchored to their
+start; the scheduler wakes at window boundaries rather than sleeping past
+them. At most three cameras capture simultaneously. Weather polling remains
+every ten minutes, independently of photo collection.
 HLS sources are opened only long enough to extract one JPEG frame. No continuous
 video is stored. No photo retention/deletion is enabled. Capture and preview
 generation pause below 512 MiB free space; monitor archive and cache growth.

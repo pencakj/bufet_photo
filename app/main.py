@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
         stop.set()
 
 
-app = FastAPI(title="Krkonoše Live", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="Krkonoše Live", version="3.0.1", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

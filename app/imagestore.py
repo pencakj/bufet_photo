@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime
 import io
 import logging
 import os
@@ -18,7 +18,7 @@ import requests
 from PIL import Image
 
 from cameras import CAMERAS, DEFAULT_CAMERA, get_camera, read_only_mode
-from solar import TZ, capture_interval_seconds
+from solar import TZ, next_capture_time
 
 logger = logging.getLogger(__name__)
 IMAGES_DIR = Path("/app/images")
@@ -261,10 +261,7 @@ def run_capture_loop(stop: threading.Event | None = None) -> None:
         while not stop.is_set():
             list(pool.map(lambda camera: capture_once(camera.id), active))
             now = datetime.now(TZ)
-            interval = capture_interval_seconds(now)
-            seconds = now.hour * 3600 + now.minute * 60 + now.second
-            target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
-                seconds=((seconds // interval) + 1) * interval)
+            target = next_capture_time(now)
             delay = max(1, (target - now).total_seconds())
-            logger.info("Next camera captures in %ds", delay)
+            logger.info("Next camera captures at %s (in %ds)", target.isoformat(), delay)
             stop.wait(delay)

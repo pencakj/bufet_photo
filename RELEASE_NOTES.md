@@ -1,3 +1,22 @@
+# 3.0.1 — Lower-frequency capture schedule
+
+All eight cameras now capture every **30 minutes by day** and **one hour at
+night**, with **five-minute** captures in the **30 minutes after sunrise** and
+**30 minutes before sunset**. Each solar window has six scheduled shots.
+The scheduler wakes at solar window starts even when they fall between regular
+hourly/half-hourly ticks; daylight saving and midnight transitions are covered
+by regression tests. A capture still occurs once at process startup.
+
+The UI cadence text and deployment image tags are updated. Compression, existing
+archives, weather polling (ten minutes), port 8000 and stopped preview state are
+unchanged. No photo deletion or recompression is performed.
+
+Verification: 48 Python tests, 2 frontend configuration tests and 3 Chromium
+integration tests passed. Live production reports a 3600-second night interval
+and its next scheduled capture at 23:00 Europe/Prague after deployment.
+
+---
+
 # 3.0.0 — Production promotion
 
 The multi-camera release is merged into **`master`**. Production now serves

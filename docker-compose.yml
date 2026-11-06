@@ -3,7 +3,7 @@ name: krkonose_live
 services:
   krkonose_live:
     build: ./app
-    image: krkonose_live:3.0.0
+    image: krkonose_live:3.0.1
     container_name: krkonose_live
     ports:
       - "8000:8000"
