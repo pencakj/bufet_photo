@@ -1,6 +1,11 @@
-// Krkonoše Live v2 — alpine editorial frontend
+// Krkonoše Live v3 — camera-scoped alpine archive
 
 const state = {
+    camera: 'rozcesti',
+    cameras: new Map(),
+    generation: 0,
+    controller: null,
+    todayCount: 0,
     images: [],
     offset: 0,
     batch: 50,
@@ -76,44 +81,110 @@ function renderWeatherChip(d) {
     chip.hidden = false;
 }
 
-// Image archive
+// Camera tabs
+function imageUrl(filename, camera = state.camera) {
+    return `/images/${encodeURIComponent(filename)}?camera=${encodeURIComponent(camera)}`;
+}
+
+function thumbUrl(filename, camera = state.camera) {
+    return `/thumbnails/${encodeURIComponent(filename)}?camera=${encodeURIComponent(camera)}`;
+}
+
+async function loadCameras() {
+    try {
+        const response = await fetch('/api/cameras');
+        if (!response.ok) throw new Error('Camera status unavailable');
+        const data = await response.json();
+        state.cameras = new Map(data.cameras.map(camera => [camera.id, camera]));
+        updateCameraInfo();
+        // A tab opened before its first capture should recover without a reload.
+        if (!state.images.length && !state.loading && state.cameras.get(state.camera)?.total > 0) {
+            resetArchive();
+            loadMore();
+        }
+    } catch (error) {
+        $('cameraStatus').textContent = 'Camera status unavailable; archive remains accessible.';
+    }
+}
+
+function updateCameraInfo() {
+    const camera = state.cameras.get(state.camera);
+    if (!camera) return;
+    $('heroPlace').textContent = camera.location;
+    $('cameraSource').textContent = `Source: ${camera.provider} ↗`;
+    $('cameraSource').href = camera.source_page;
+    const latest = camera.latest ? `Last capture: ${camera.latest.formatted_time}` : 'Waiting for the first capture';
+    $('cameraStatus').textContent = camera.last_error
+        ? `${latest} · ${camera.last_error}`
+        : `${latest}${camera.read_only ? ' · Shared production archive (read-only)' : ''}`;
+}
+
+function selectCamera(camera) {
+    if (camera === state.camera) return;
+    state.camera = camera;
+    document.querySelectorAll('.camera-tab').forEach(tab => {
+        const selected = tab.dataset.camera === camera;
+        tab.classList.toggle('active', selected);
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+    });
+    $('cameraPanel').setAttribute('aria-labelledby', `tab-${camera}`);
+    closeLightbox();
+    resetArchive();
+    updateCameraInfo();
+    loadMore();
+}
+
+// Image archive: generation IDs prevent stale responses after tab/sort changes.
 async function loadMore() {
     if (state.loading || !state.hasMore) return;
     state.loading = true;
+    const generation = state.generation;
+    state.controller = new AbortController();
     $('loading').hidden = false;
     try {
-        const r = await fetch(`/api/images?offset=${state.offset}&limit=${state.batch}&order=${state.order}`);
+        const r = await fetch(`/api/images?camera=${encodeURIComponent(state.camera)}&offset=${state.offset}&limit=${state.batch}&order=${state.order}`, { signal: state.controller.signal });
+        if (!r.ok) throw new Error('Archive unavailable');
         const j = await r.json();
+        if (generation !== state.generation) return;
+        state.total = j.total;
+        state.todayCount = j.today_count;
+        updateNumbers();
         if (j.images && j.images.length) {
             state.images.push(...j.images);
             state.offset += j.images.length;
             state.hasMore = j.has_more;
-            state.total = j.total;
-
             if (state.images.length === j.images.length) renderHero(state.images[0]);
-            updateNumbers();
             renderNewImages(j.images);
         } else {
             state.hasMore = false;
+            if (!state.images.length) {
+                $('heroPlate').textContent = 'Waiting for capture';
+                $('archiveMessage').textContent = 'No photographs yet. The first capture will appear after collection completes.';
+                $('archiveMessage').hidden = false;
+            }
         }
     } catch (e) {
+        if (generation !== state.generation || e.name === 'AbortError') return;
         console.error('Failed to load images:', e);
+        $('archiveMessage').textContent = 'Could not load this archive. Switch tabs or refresh to retry.';
+        $('archiveMessage').hidden = false;
     } finally {
-        state.loading = false;
-        $('loading').hidden = true;
+        if (generation === state.generation) {
+            state.loading = false;
+            $('loading').hidden = true;
+        }
     }
 }
 
 function updateNumbers() {
     $('totalCount').textContent = state.total.toLocaleString('cs-CZ');
-    const today = new Date().toISOString().split('T')[0];
-    const todayCount = state.images.filter(i => i.day === today).length;
-    $('todayCount').textContent = todayCount.toLocaleString('cs-CZ');
+    $('todayCount').textContent = (state.todayCount || 0).toLocaleString('cs-CZ');
 }
 
 function renderHero(img) {
     const heroImg = $('heroImage');
-    heroImg.src = `/images/${img.path}`;
+    heroImg.src = imageUrl(img.path);
     heroImg.alt = `Photograph from ${img.formatted_time}`;
     heroImg.onload = () => {
         heroImg.style.opacity = 1;
@@ -143,7 +214,10 @@ function renderNewImages(images) {
         frame.onclick = () => openLightbox(globalIndex);
 
         const el = document.createElement('img');
-        el.dataset.src = `/thumbnails/${img.thumb_path}`;
+        el.dataset.src = thumbUrl(img.thumb_path);
+        el.dataset.original = imageUrl(img.path);
+        el.dataset.filename = img.path;
+        el.dataset.camera = state.camera;
         el.alt = img.formatted_time;
         el.loading = 'lazy';
 
@@ -195,11 +269,12 @@ const thumbObserver = new IntersectionObserver((entries) => {
             img.src = img.dataset.src;
             img.onload = () => img.classList.add('loaded');
             img.onerror = () => {
-                // Fallback: try generating thumbnail on-demand
-                const filename = img.dataset.src.split('/').pop().replace(/^thumb_/, '');
-                fetch(`/api/generate-thumbnail/${filename}`).then(() => {
-                    img.src = img.dataset.src + '?retry=' + Date.now();
-                });
+                // Only one generation attempt; read-only archives fall back to JPEG.
+                img.onerror = null;
+                fetch(`/api/generate-thumbnail/${encodeURIComponent(img.dataset.filename)}?camera=${encodeURIComponent(img.dataset.camera)}`)
+                    .then(response => {
+                        img.src = response.ok ? img.dataset.src + '&retry=' + Date.now() : img.dataset.original;
+                    }).catch(() => { img.src = img.dataset.original; });
             };
             thumbObserver.unobserve(img);
         }
@@ -225,11 +300,26 @@ function applySortLabel() {
 }
 
 function resetArchive() {
+    if (state.controller) state.controller.abort();
+    state.generation += 1;
+    state.loading = false;
+    state.total = 0;
+    state.todayCount = 0;
+    updateNumbers();
+    thumbObserver.disconnect();
     state.images = [];
     state.offset = 0;
     state.hasMore = true;
     state.renderedChapters.clear();
     $('archive').innerHTML = '';
+    $('archiveMessage').hidden = true;
+    $('heroImage').removeAttribute('src');
+    $('heroImage').alt = '';
+    $('heroImage').style.opacity = 0;
+    $('heroFigure').onclick = null;
+    $('heroTime').textContent = '—';
+    $('heroNum').textContent = '—';
+    $('heroPlate').textContent = 'Loading…';
 }
 
 // Lightbox
@@ -237,7 +327,7 @@ function openLightbox(index) {
     state.currentIndex = index;
     const img = state.images[index];
     if (!img) return;
-    $('lbImage').src = `/images/${img.path}`;
+    $('lbImage').src = imageUrl(img.path);
     $('lbCaption').textContent = img.formatted_time;
     $('lightbox').hidden = false;
     document.body.style.overflow = 'hidden';
@@ -253,7 +343,7 @@ function navigate(dir) {
     if (!n) return;
     state.currentIndex = (state.currentIndex + dir + n) % n;
     const img = state.images[state.currentIndex];
-    $('lbImage').src = `/images/${img.path}`;
+    $('lbImage').src = imageUrl(img.path);
     $('lbCaption').textContent = img.formatted_time;
 }
 
@@ -345,6 +435,21 @@ function renderChart() {
 
 // Bind
 function bind() {
+    const tabs = [...document.querySelectorAll('.camera-tab')];
+    tabs.forEach((tab, index) => {
+        tab.addEventListener('click', () => selectCamera(tab.dataset.camera));
+        tab.addEventListener('keydown', event => {
+            let next;
+            if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+            else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+            else if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = tabs.length - 1;
+            else return;
+            event.preventDefault();
+            tabs[next].focus();
+            selectCamera(tabs[next].dataset.camera);
+        });
+    });
     $('themeToggle').addEventListener('click', toggleTheme);
     $('sortToggle').addEventListener('click', toggleSort);
     $('weatherChip').addEventListener('click', openReader);
@@ -392,6 +497,8 @@ document.addEventListener('DOMContentLoaded', () => {
     applySortLabel();
     loadWeather();
     setInterval(loadWeather, 300000);
+    loadCameras();
+    setInterval(loadCameras, 60000);
     loadMore();
     sentinelObserver.observe($('sentinel'));
 });

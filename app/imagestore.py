@@ -1,224 +1,230 @@
-"""Image storage: download, thumbnail, cache, scheduled capture."""
+"""Camera-scoped archives and bounded JPEG/HLS snapshot collection."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 import io
 import logging
 import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import TypedDict
 
-import pytz
 import requests
 from PIL import Image
 
+from cameras import CAMERAS, DEFAULT_CAMERA, get_camera
 from solar import TZ, capture_interval_seconds
 
 logger = logging.getLogger(__name__)
-
 IMAGES_DIR = Path("/app/images")
 THUMBS_DIR = Path("/app/thumbnails")
-SOURCE_URL = "https://chalupanarozcesti.cz/webcam/latest.php"
+DATA_DIR = Path(os.environ.get("CAMERA_DATA_DIR", "/app/camera-data"))
 THUMB_SIZE = (400, 400)
-
-IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-THUMBS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-class ImageEntry(TypedDict):
-    path: str
-    thumb_path: str
-    formatted_time: str
-    day: str
-    timestamp: str
-    has_thumbnail: bool
+MAX_IMAGE_BYTES = 16 * 1024 * 1024
+MIN_FREE_BYTES = 512 * 1024 * 1024
+IMAGE_NAME = re.compile(r"^image_\d{8}_\d{6}\.jpg$")
+_stores: dict[str, Archive] = {}
+_stores_lock = threading.Lock()
 
 
-_cache: list[ImageEntry] | None = None
-_cache_latest_ts: str = ""
-_cache_lock = threading.Lock()
+def directories(camera_id: str = DEFAULT_CAMERA) -> tuple[Path, Path]:
+    get_camera(camera_id)  # Reject unknown IDs before constructing paths.
+    if camera_id == DEFAULT_CAMERA:
+        return IMAGES_DIR, THUMBS_DIR
+    root = DATA_DIR / camera_id
+    return root / "images", root / "thumbnails"
 
 
-def _now_prague() -> datetime:
-    return datetime.now(pytz.UTC).astimezone(TZ)
-
-
-def _entry_from_name(name: str, thumb_set: set[str]) -> ImageEntry:
-    ts = name[len("image_") : -len(".jpg")]
+def _entry(name: str, thumbs: set[str]) -> dict:
+    ts = name[6:-4]
     day = f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}"
-    formatted = f"{day} {ts[9:11]}:{ts[11:13]}:{ts[13:15]}"
-    thumb = f"thumb_{name}"
     return {
-        "path": name,
-        "thumb_path": thumb,
-        "formatted_time": formatted,
-        "day": day,
+        "path": name, "thumb_path": f"thumb_{name}", "day": day,
         "timestamp": ts,
-        "has_thumbnail": thumb in thumb_set,
+        "formatted_time": f"{day} {ts[9:11]}:{ts[11:13]}:{ts[13:15]}",
+        "has_thumbnail": f"thumb_{name}" in thumbs,
     }
 
 
-def make_thumbnail(image_path: Path) -> Path | None:
+class Archive:
+    def __init__(self, camera_id: str):
+        self.camera_id = camera_id
+        self.images, self.thumbs = directories(camera_id)
+        self.lock = threading.Lock()
+        self.entries: list[dict] = []
+        self.refreshed = float("-inf")
+        self.last_error: str | None = None
+        if not get_camera(camera_id).read_only:
+            self.images.mkdir(parents=True, exist_ok=True)
+            self.thumbs.mkdir(parents=True, exist_ok=True)
+
+    def list(self) -> list[dict]:
+        with self.lock:
+            if time.monotonic() - self.refreshed < 10:
+                return list(self.entries)
+            names = {n for n in os.listdir(self.images) if IMAGE_NAME.fullmatch(n)} if self.images.exists() else set()
+            thumbs = set(os.listdir(self.thumbs)) if self.thumbs.exists() else set()
+            # Reuse existing metadata, but honor deletions and backfilled captures.
+            previous = {item["path"]: item for item in self.entries}
+            self.entries = sorted(
+                (dict(previous[n], has_thumbnail=f"thumb_{n}" in thumbs)
+                 if n in previous else _entry(n, thumbs) for n in names),
+                key=lambda item: item["timestamp"], reverse=True,
+            )
+            self.refreshed = time.monotonic()
+            return list(self.entries)
+
+    def invalidate(self):
+        with self.lock:
+            self.refreshed = float("-inf")
+
+
+def archive(camera_id: str = DEFAULT_CAMERA) -> Archive:
+    with _stores_lock:
+        paths = directories(camera_id)
+        store = _stores.get(camera_id)
+        if store is None or (store.images, store.thumbs) != paths:
+            store = _stores[camera_id] = Archive(camera_id)
+        return store
+
+
+def list_images(camera_id: str = DEFAULT_CAMERA) -> list[dict]:
+    return archive(camera_id).list()
+
+
+def _atomic_write(path: Path, content: bytes):
+    temporary = None
     try:
-        thumb_path = THUMBS_DIR / f"thumb_{image_path.name}"
-        if not thumb_path.exists():
-            with Image.open(image_path) as img:
-                img.thumbnail(THUMB_SIZE)
-                img.save(thumb_path, "JPEG", quality=85)
-        return thumb_path
-    except Exception as e:
-        logger.error("Thumbnail failed for %s: %s", image_path, e)
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".capture-", delete=False) as file:
+            temporary = Path(file.name)
+            file.write(content)
+        temporary.chmod(0o644)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def make_thumbnail(image_path: Path, camera_id: str = DEFAULT_CAMERA) -> Path | None:
+    try:
+        camera = get_camera(camera_id)
+        _, thumbs = directories(camera_id)
+        target = thumbs / f"thumb_{image_path.name}"
+        if target.exists():
+            return target
+        if camera.read_only:
+            return None
+        with Image.open(image_path) as img:
+            img.thumbnail(THUMB_SIZE)
+            output = io.BytesIO()
+            img.convert("RGB").save(output, "JPEG", quality=85)
+        _atomic_write(target, output.getvalue())
+        return target
+    except Exception:
+        logger.exception("Thumbnail failed for %s", image_path)
         return None
 
 
-def list_images() -> list[ImageEntry]:
-    """Return all images newest-first, using an incrementally-refreshed cache."""
-    global _cache, _cache_latest_ts
+def _fetch_jpeg(url: str) -> bytes:
+    chunks = []
+    size = 0
+    started = time.monotonic()
+    with requests.get(url, stream=True, timeout=(10, 15)) as response:
+        response.raise_for_status()
+        for chunk in response.iter_content(64 * 1024):
+            size += len(chunk)
+            if size > MAX_IMAGE_BYTES or time.monotonic() - started > 30:
+                raise ValueError("Image download exceeded its size or time limit")
+            chunks.append(chunk)
+    return b"".join(chunks)
 
-    with _cache_lock:
-        try:
-            names = os.listdir(IMAGES_DIR)
-        except FileNotFoundError:
-            return _cache or []
 
-        if _cache is None:
+def _snapshot_hls(url: str) -> bytes:
+    # No shell, no user-provided URL, no continuous recording, one decoder thread.
+    result = subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-protocol_whitelist", "https,tls,tcp,crypto", "-rw_timeout", "15000000",
+        "-threads", "1", "-i", url, "-frames:v", "1", "-an",
+        "-vf", "scale='min(2048,iw)':-2", "-threads", "1",
+        "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+    ], capture_output=True, timeout=45, check=True)
+    return result.stdout
+
+
+def capture_once(camera_id: str = DEFAULT_CAMERA) -> Path | None:
+    camera = get_camera(camera_id)
+    if camera.read_only:
+        return None
+    store = archive(camera_id)
+    try:
+        if shutil.disk_usage(store.images).free < MIN_FREE_BYTES:
+            raise OSError("Less than 512 MiB free; capture paused to protect storage")
+        # Providers can update a JPEG while it is being downloaded. Decode it
+        # fully before publishing and retry a torn JPEG once (never accept it).
+        attempts = 2 if camera.kind == "jpeg" else 1
+        for attempt in range(attempts):
             try:
-                thumbs = set(os.listdir(THUMBS_DIR))
-            except FileNotFoundError:
-                thumbs = set()
-
-            t0 = time.time()
-            entries: list[ImageEntry] = []
-            for n in names:
-                if not (n.startswith("image_") and n.endswith(".jpg")):
-                    continue
-                try:
-                    entries.append(_entry_from_name(n, thumbs))
-                except Exception as e:
-                    logger.error("Skipping %s: %s", n, e)
-
-            entries.sort(key=lambda e: e["timestamp"], reverse=True)
-            _cache = entries
-            _cache_latest_ts = entries[0]["timestamp"] if entries else ""
-            logger.info("Image cache built: %d entries in %.2fs", len(entries), time.time() - t0)
-            return _cache
-
-        new_names = [
-            n for n in names
-            if n.startswith("image_") and n.endswith(".jpg")
-            and n[len("image_") : -len(".jpg")] > _cache_latest_ts
-        ]
-        if not new_names:
-            return _cache
-
-        try:
-            thumbs = set(os.listdir(THUMBS_DIR))
-        except FileNotFoundError:
-            thumbs = set()
-
-        new_entries = []
-        for n in new_names:
-            try:
-                new_entries.append(_entry_from_name(n, thumbs))
-            except Exception as e:
-                logger.error("Skipping %s: %s", n, e)
-
-        new_entries.sort(key=lambda e: e["timestamp"], reverse=True)
-        _cache = new_entries + _cache
-        _cache_latest_ts = new_entries[0]["timestamp"]
-        logger.info("Image cache: +%d new (total %d)", len(new_entries), len(_cache))
-        return _cache
+                content = _fetch_jpeg(camera.url) if camera.kind == "jpeg" else _snapshot_hls(camera.url)
+                if not content or len(content) > MAX_IMAGE_BYTES:
+                    raise ValueError("Invalid snapshot size")
+                with Image.open(io.BytesIO(content)) as image:
+                    if image.format != "JPEG":
+                        raise ValueError("Snapshot is not a JPEG")
+                    image.load()
+                break
+            except (OSError, ValueError, requests.RequestException):
+                if attempt + 1 == attempts:
+                    raise
+                time.sleep(0.5)
+        timestamp = datetime.now(TZ).strftime("%Y%m%d_%H%M%S")
+        target = store.images / f"image_{timestamp}.jpg"
+        _atomic_write(target, content)
+        make_thumbnail(target, camera_id)
+        store.invalidate()
+        with store.lock:
+            store.last_error = None
+        logger.info("Captured %s: %s", camera_id, target.name)
+        return target
+    except Exception:
+        with store.lock:
+            store.last_error = "Capture failed; retrying at the next scheduled capture"
+        logger.exception("Capture failed for %s", camera_id)
+        return None
 
 
-def _prepend_cache(image_path: Path) -> None:
-    global _cache, _cache_latest_ts
-    with _cache_lock:
-        if _cache is None:
-            return
-        name = image_path.name
-        ts = name[len("image_") : -len(".jpg")]
-        if ts <= _cache_latest_ts:
-            return
-        try:
-            thumbs = {f"thumb_{name}"} if (THUMBS_DIR / f"thumb_{name}").exists() else set()
-            _cache.insert(0, _entry_from_name(name, thumbs))
-            _cache_latest_ts = ts
-        except Exception as e:
-            logger.error("Failed to prepend %s: %s", name, e)
+def camera_status(camera_id: str) -> dict:
+    camera = get_camera(camera_id)
+    store = archive(camera_id)
+    images = store.list()
+    latest = images[0] if images else None
+    with store.lock:
+        error = store.last_error
+    return {
+        "id": camera.id, "name": camera.name, "kind": camera.kind,
+        "location": camera.location, "provider": camera.provider,
+        "source_page": camera.source_page, "read_only": camera.read_only,
+        "total": len(images), "latest": latest,
+        "last_error": error,
+        "status": "error" if error else ("ok" if latest else "waiting"),
+    }
 
 
-def capture_once() -> Path | None:
-    try:
-        r = requests.get(SOURCE_URL, stream=True, timeout=30)
-        if r.status_code != 200:
-            logger.error("Capture HTTP %s", r.status_code)
-            return None
-        content = r.content
-        try:
-            Image.open(io.BytesIO(content)).verify()
-        except Exception as e:
-            logger.error("Invalid image payload: %s", e)
-            return None
-
-        ts = _now_prague().strftime("%Y%m%d_%H%M%S")
-        target = IMAGES_DIR / f"image_{ts}.jpg"
-        target.write_bytes(content)
-
-        # De-duplicate within the same minute, keep largest
-        minute_prefix = ts[:-2]
-        siblings = sorted(
-            IMAGES_DIR.glob(f"image_{minute_prefix}*.jpg"),
-            key=lambda p: p.stat().st_size,
-            reverse=True,
-        )
-        if len(siblings) > 1:
-            for extra in siblings[1:]:
-                try:
-                    extra.unlink()
-                except FileNotFoundError:
-                    pass
-
-        final = siblings[0] if siblings else target
-        if final.exists():
-            make_thumbnail(final)
-            _prepend_cache(final)
-            logger.info("Captured %s", final.name)
-            return final
-    except Exception as e:
-        logger.error("Capture failed: %s", e)
-    return None
-
-
-def run_capture_loop() -> None:
-    try:
-        list_images()
-    except Exception as e:
-        logger.error("Warm cache failed: %s", e)
-
-    try:
-        capture_once()
-    except Exception as e:
-        logger.error("Initial capture failed: %s", e)
-
-    while True:
-        interval = capture_interval_seconds()
-        now = datetime.now(TZ)
-        seconds_since_midnight = now.hour * 3600 + now.minute * 60 + now.second
-        next_tick = ((seconds_since_midnight // interval) + 1) * interval
-
-        if next_tick >= 86400:
-            next_tick %= 86400
-            base = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-            target = base + timedelta(seconds=next_tick)
-        else:
-            h, m, s = next_tick // 3600, (next_tick % 3600) // 60, next_tick % 60
-            target = now.replace(hour=h, minute=m, second=s, microsecond=0)
-
-        delay = (target - now).total_seconds()
-        if delay > 0:
-            logger.info("Next capture at %s (in %ds)", target.strftime("%H:%M:%S"), int(delay))
-            time.sleep(delay)
-
-        capture_once()
+def run_capture_loop(stop: threading.Event | None = None) -> None:
+    stop = stop or threading.Event()
+    active = [camera for camera in CAMERAS if not camera.read_only]
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="capture") as pool:
+        while not stop.is_set():
+            list(pool.map(lambda camera: capture_once(camera.id), active))
+            now = datetime.now(TZ)
+            interval = capture_interval_seconds(now)
+            seconds = now.hour * 3600 + now.minute * 60 + now.second
+            target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+                seconds=((seconds // interval) + 1) * interval)
+            delay = max(1, (target - now).total_seconds())
+            logger.info("Next camera captures in %ds", delay)
+            stop.wait(delay)

@@ -1,16 +1,20 @@
-name: krkonose_live
+name: krkonose_live_release
 
 services:
   krkonose_live:
     build: ./app
-    image: krkonose_live:2.0
-    container_name: krkonose_live
+    image: krkonose_live:3.0.0-rc.1
+    container_name: krkonose_live_release
     ports:
-      - "8003:8003"
+      - "8004:8003"
     volumes:
-      - /appl/data/bufet/data/images:/app/images
-      - /appl/data/bufet/data/thumbnails:/app/thumbnails
-      - /appl/data/bufet/data/weather:/app/data
+      - /appl/data/bufet/data/images:/app/images:ro
+      - /appl/data/bufet/data/thumbnails:/app/thumbnails:ro
+      - /appl/data/bufet/data/weather:/app/data:ro
+      - /appl/data/krkonose_live_release:/app/camera-data
+    environment:
+      LEGACY_READ_ONLY: "true"
+      WEATHER_POLL_ENABLED: "false"
     user: "1001:1001"
     read_only: true
     tmpfs:
@@ -26,3 +30,4 @@ services:
       start_period: 60s
       retries: 3
     restart: unless-stopped
+    stop_grace_period: 60s

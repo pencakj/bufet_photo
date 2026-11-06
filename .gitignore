@@ -11,3 +11,6 @@ venv/
 !.env.example
 .claude/
 security-reports/
+node_modules/
+playwright-report/
+test-results/

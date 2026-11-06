@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css?v=2">
+    <link rel="stylesheet" href="/static/styles.css?v=3">
 </head>
 <body>
     <div class="grain" aria-hidden="true"></div>
@@ -20,12 +20,12 @@
                 </span>
                 <span class="brand-text">
                     <span class="brand-title">Krkonoše Live</span>
-                    <span class="brand-dek">An alpine journal · Pec pod Sněžkou</span>
+                    <span class="brand-dek">An alpine journal · Krkonoše · v3 preview</span>
                 </span>
             </a>
 
             <nav class="controls">
-                <button class="weather-chip" id="weatherChip" type="button" hidden>
+                <button class="weather-chip" id="weatherChip" type="button" title="Weather station: Chalupa na Rozcestí (shared across camera views)" hidden>
                     <span class="chip-temp" id="chipTemp">--°</span>
                     <span class="chip-meta">
                         <span class="chip-range"><span class="chip-min" id="chipMin">--°</span> · <span class="chip-max" id="chipMax">--°</span></span>
@@ -44,6 +44,20 @@
             </nav>
         </header>
 
+        <nav class="camera-tabs" role="tablist" aria-label="Kamery">
+            {% for camera in cameras %}
+            <button class="camera-tab{% if loop.first %} active{% endif %}" type="button"
+                    id="tab-{{ camera.id }}" role="tab" data-camera="{{ camera.id }}"
+                    aria-controls="cameraPanel" aria-selected="{{ 'true' if loop.first else 'false' }}"
+                    tabindex="{{ '0' if loop.first else '-1' }}">{{ camera.name }}</button>
+            {% endfor %}
+        </nav>
+        <section id="cameraPanel" role="tabpanel" aria-labelledby="tab-rozcesti" tabindex="0">
+        <div class="camera-info">
+            <p id="cameraStatus" role="status">Loading camera…</p>
+            <a id="cameraSource" href="https://chalupanarozcesti.cz/" target="_blank" rel="noopener noreferrer">Source: Chalupa na Rozcestí ↗</a>
+        </div>
+        <p class="weather-station-note">Weather: Chalupa na Rozcestí · shared station, not measured at every camera.</p>
         <section class="hero" aria-label="Latest photograph">
             <figure class="hero-figure" id="heroFigure">
                 <div class="hero-frame">
@@ -53,7 +67,7 @@
                 <figcaption class="hero-caption">
                     <span class="kicker">Dispatch nº <span id="heroNum">—</span></span>
                     <h2 class="hero-time" id="heroTime">—</h2>
-                    <p class="hero-place">50.71° N · 15.67° E · 1 350 m</p>
+                    <p class="hero-place" id="heroPlace">50.71° N · 15.67° E · 1 350 m</p>
                 </figcaption>
             </figure>
 
@@ -95,13 +109,15 @@
         </header>
 
         <main class="archive" id="archive" aria-live="polite"></main>
+        <p id="archiveMessage" class="archive-message" role="status" hidden></p>
 
         <div id="sentinel" aria-hidden="true"></div>
         <div class="loading" id="loading" hidden><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+        </section>
 
         <footer class="colophon">
             <p>Krkonoše Live · An ongoing record of the highest Czech mountains.</p>
-            <p class="mono">v2.0 · FastAPI · JetBrains Mono</p>
+            <p class="mono">v3.0.0-rc.1 · Multi-camera preview · FastAPI</p>
         </footer>
     </div>
 
@@ -121,7 +137,7 @@
         <div class="reader-sheet">
             <header class="reader-head">
                 <div>
-                    <p class="eyebrow">Meteorological record</p>
+                    <p class="eyebrow">Meteorological record · Chalupa na Rozcestí</p>
                     <h3 class="reader-title" id="readerTitle">Temperature</h3>
                 </div>
                 <button class="reader-close" id="readerClose" aria-label="Close">×</button>
@@ -148,6 +164,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js" integrity="sha384-Emf5ZVIUiarAdhkgtqK+5/Z5qIvM6QoVrS+qAVtfyZVuD5lIHrac0me485+Antp0" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js" integrity="sha384-cVMg8E3QFwTvGCDuK+ET4PD341jF3W8nO1auiXfuZNQkzbUUiBGLsIQUE+b1mxws" crossorigin="anonymous"></script>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=3"></script>
 </body>
 </html>
