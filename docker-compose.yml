@@ -1,12 +1,28 @@
-version: '3.8'
+name: krkonose_live
 
 services:
-  webapp:
+  krkonose_live:
     build: ./app
+    image: krkonose_live:2.0
+    container_name: krkonose_live
     ports:
-      - "8001:8001"
+      - "8003:8003"
     volumes:
-      - ./data/images:/app/images
-      - ./data/thumbnails:/app/thumbnails
-    user: root
+      - /appl/data/bufet/data/images:/app/images
+      - /appl/data/bufet/data/thumbnails:/app/thumbnails
+      - /appl/data/bufet/data/weather:/app/data
+    user: "1001:1001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
